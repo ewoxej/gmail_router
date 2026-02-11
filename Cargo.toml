@@ -1,0 +1,22 @@
+[package]
+name = "gmail_router"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9.34-deprecated"
+serde_json = "1.0"
+google-gmail1 = "5.0.0"
+yup-oauth2 = "12.1.2"
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+base64 = "0.22.0"
+dirs = "5"
+
+[profile.release]
+opt-level = 3
+lto = true
