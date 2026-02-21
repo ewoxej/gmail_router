@@ -1,8 +1,6 @@
 # Build stage
 FROM rust:1.93-bookworm AS builder
 
-RUN apk add --no-cache musl-dev
-
 WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./
@@ -13,9 +11,9 @@ RUN rm src/main.rs
 COPY src ./src
 RUN touch src/main.rs && cargo build --release
 
-FROM alpine:3.20
+FROM debian:bookworm-slim
 
-RUN apk add --no-cache ca-certificates
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
