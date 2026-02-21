@@ -37,7 +37,7 @@ Windows: `C:\Users\username\AppData\Roaming\gmail_router`
 ```yml
 services:
   gmail_router:
-    image: gmail_router
+    image: ghcr.io/ewoxej/gmail_router:latest
     container_name: gmail_router
     volumes:
       - config/gmail_router:/root/.config/gmail_router
