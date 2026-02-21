@@ -1,157 +1,71 @@
 # Gmail Router
 
-Автоматический роутер почты для Gmail, который фильтрует и удаляет письма на основе конфигурации. Программа фильтрует по адресу to, то есть имеет смысл если вы владете своим доменом и направляете почту
-Добавить возможность пересылки на другие адреса через mailjet
+Automatic email router for Gmail that filters and deletes messages based on configuration. The program filters by the "to" address, so it makes sense if you own your own domain and route mail to it.
+Personally, I run a Docker container on my own server, but you can build the project yourself. Either way, obtaining Google credentials for API access is a required step.
 
-## Настройка Gmail API
+## Gmail API Setup
 
-### 1. Создание проекта и включение Gmail API
+### 1. Creating a Project and Enabling Gmail API
 
-1. Перейдите в [Google Cloud Console](https://console.cloud.google.com/)
-2. Создайте новый проект или выберите существующий
-3. Перейдите в "APIs & Services" → "Library"
-4. Найдите "Gmail API" и нажмите "Enable"
+Go to Google Cloud Console
+Create a new project or select an existing one
+Navigate to "APIs & Services" → "Library"
+Find "Gmail API" and click "Enable"
 
-### 2. Создание OAuth2 Credentials
+### 2. Creating OAuth2 Credentials
 
-1. Перейдите в "APIs & Services" → "Credentials"
-2. Нажмите "Create Credentials" → "OAuth client ID"
-3. Выберите "Desktop app" как тип приложения
-4. Дайте название (например, "Gmail Router")
-5. Нажмите "Create"
-6. Скачайте JSON файл с credentials
-7. Сохраните его как `credentials.json` в директории проекта
+Navigate to "APIs & Services" → "Credentials"
+Click "Create Credentials" → "OAuth client ID"
+Select "Desktop app" as the application type
+Enter a name (e.g., "Gmail Router") and click "Create"
+Download the JSON credentials file and save it as secret.json in the configuration folder
 
-### 3. Настройка OAuth consent screen
+The folder path depends on your OS:
+Linux: `~/.config/gmail_router`
+MacOS: `/Users/username/Library/Application Support/gmail_router`
+Windows: `C:\Users\username\AppData\Roaming\gmail_router`
 
-1. Перейдите в "APIs & Services" → "OAuth consent screen"
-2. Выберите "External" (если не используете Google Workspace)
-3. Заполните обязательные поля (название приложения, email и т.д.)
-4. Добавьте scope: `https://www.googleapis.com/auth/gmail.modify`
-5. Добавьте себя в тестовые пользователи
+### 3. Setting up scopes
 
-## Установка и запуск
+1. Go to "APIs & Services" → "Data Access"
+2. Add scope: `https://mail.google.com/` (Grants full permissions to delete, send emails, etc.)
 
-### 1. Клонирование и сборка
+## Installation and running
+
+### With docker compose:
+
+```yml
+services:
+  gmail_router:
+    image: gmail_router
+    container_name: gmail_router
+    volumes:
+      - config/gmail_router:/root/.config/gmail_router
+    restart: unless-stopped
+```
+
+### Manual building:
 
 ```bash
-# Переход в директорию проекта
+git clone https://github.com/ewoxej/gmail_router.git
 cd gmail_router
-
-# Сборка проекта
 cargo build --release
 ```
 
-### 2. Настройка конфигурации
+### Configuration and Launch
 
-Скопируйте примеры конфигов и отредактируйте их:
+Copy the sample configuration files and edit them:
 
-```bash
-cp credentials.yaml.example credentials.yaml
-```
+On first launch:
+1. A browser will open for Google authorization.
+2. Allow access for the application.
+3. The program will scan all emails and create a routing.yaml file.
+4. All found addresses will be added with the true (allowed) flag.
 
-Отредактируйте `credentials.yaml`:
+The last scan date will also be recorded in routing.yaml. The next scan will check only new emails, not all emails.
+The program will run continuously, checking email every check_interval_seconds.
+Block the desired addresses by setting the value to false in routing.yaml.
 
-```yaml
-google_credentials_path: "credentials.json"  # Путь к OAuth2 credentials
-domain: "example.com"                        # Ваш домен
-check_interval_seconds: 3600                 # Интервал проверки (1 час)
-start_date: "2024-01-01T00:00:00Z"          # С какой даты проверять
-```
-
-### 3. Первый запуск (инициализация)
-
-```bash
-cargo run --release
-```
-
-При первом запуске:
-1. Откроется браузер для авторизации в Google
-2. Разрешите доступ приложению
-3. Программа просканирует все письма и создаст `routing.yaml`
-4. Все найденные адреса будут добавлены с флагом `true` (разрешены)
-
-### 4. Настройка роутинга
-
-Отредактируйте `routing.yaml`, чтобы заблокировать нужные адреса:
-
-```yaml
-addresses:
-  admin: true      # Разрешено - письма не удаляются
-  test: true       # Разрешено
-  spam: false      # Заблокировано - письма удаляются
-  abuse: false     # Заблокировано
-```
-
-### 5. Запуск в режиме демона
-
-После настройки конфига просто запустите программу снова:
-
-```bash
-cargo run --release
-```
-
-Программа будет работать постоянно, проверяя почту каждые `check_interval_seconds` секунд.
-
-## Запуск как systemd сервис (Linux)
-
-Создайте файл `/etc/systemd/system/gmail-router.service`:
-
-```ini
-[Unit]
-Description=Gmail Router Service
-After=network.target
-
-[Service]
-Type=simple
-User=your_username
-WorkingDirectory=/path/to/gmail_router
-ExecStart=/path/to/gmail_router/target/release/gmail_router
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Запустите сервис:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable gmail-router
-sudo systemctl start gmail-router
-sudo systemctl status gmail-router
-```
-
-## Логирование
-
-По умолчанию уровень логирования - `info`. Для изменения установите переменную окружения:
-
-```bash
-# Debug уровень
-RUST_LOG=debug cargo run --release
-
-# Только ошибки
-RUST_LOG=error cargo run --release
-
-# Детальное логирование конкретного модуля
-RUST_LOG=gmail_router::processor=debug cargo run --release
-```
-## Структура проекта
-
-```
-gmail_router/
-├── src/
-│   ├── main.rs          # Основная логика и цикл демона
-│   ├── config.rs        # Работа с конфигами
-│   ├── gmail.rs         # Gmail API клиент
-│   └── processor.rs     # Обработка и фильтрация писем
-├── Cargo.toml
-├── credentials.yaml     # Конфиг с credentials (создается вручную)
-├── routing.yaml         # Конфиг роутинга (создается автоматически)
-└── token_cache.json     # OAuth токены (создается автоматически)
-```
-
-## Лицензия
+## License
 
 MIT

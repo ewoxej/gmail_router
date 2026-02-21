@@ -2,7 +2,6 @@
 /target/
 **/*.rs.bk
 *.pdb
-Cargo.lock
 
 # Sensitive configuration files
 secret.json

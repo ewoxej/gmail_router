@@ -1,8 +1,0 @@
-addresses:
-  # Banned address example
-  spam: false
-  
-  # Allowed address example
-  admin: true
-  support: true
-  info: true
