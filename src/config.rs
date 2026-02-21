@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 pub fn get_config_path(filename: &str) -> PathBuf {
     let mut path = dirs::config_dir().expect("Cannot find config dir");
-    path.push("my_app");
+    path.push("gmail_router");
     std::fs::create_dir_all(&path).expect("Cannot create config dir");
     path.push(filename);
     path

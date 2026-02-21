@@ -21,11 +21,15 @@ impl GmailClient {
             .await
             .context("Failed to read OAuth2 credentials")?;
 
+        let mut path = dirs::config_dir().expect("Cannot find config dir");
+        path.push("gmail_router");
+        std::fs::create_dir_all(&path).expect("Cannot create config dir");
+        path.push("token_cache.json");
         let auth = oauth2::InstalledFlowAuthenticator::builder(
             secret,
-            oauth2::InstalledFlowReturnMethod::HTTPRedirect,
+            oauth2::InstalledFlowReturnMethod::HTTPPortRedirect(14500),
         )
-        .persist_tokens_to_disk("token_cache.json")
+        .persist_tokens_to_disk(path)
         .build()
         .await
         .context("Failed to create authenticator")?;

@@ -20,8 +20,12 @@ async fn main() -> Result<()> {
     let credentials_path = get_config_path(CREDENTIALS_FILE);
     let routing_path = get_config_path(ROUTING_FILE);
 
-    let creds_config = config::CredentialsConfig::load(credentials_path)
-        .context("Failed to load credentials config. Make sure credentials.yaml exists")?;
+    let creds_config = config::CredentialsConfig::load(&credentials_path).with_context(|| {
+        format!(
+            "Failed to load credentials config. Make sure {:?} exists",
+            credentials_path
+        )
+    })?;
 
     info!("Domain: {}", creds_config.domain);
     info!(
