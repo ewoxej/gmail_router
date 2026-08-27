@@ -1,0 +1,15 @@
+[application]
+
+[web.app]
+title = "Gmail Router"
+
+[web.resource]
+style = []
+script = []
+
+[web.resource.dev]
+script = []
+
+[bundle]
+identifier = "dev.ewoxej.gmail_router"
+publisher = "ewoxej"

@@ -4,19 +4,56 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1.35", features = ["full"] }
+# UI framework. Compiles to every target; the `web`/`server` features below
+# select which half is built. `serde`/`serde_json` are shared (the wasm client
+# and the server both (de)serialize the DTOs in `models.rs`).
+# Pinned exactly to match the `dx` CLI (0.7.3), which refuses to build on any
+# dioxus-crate mismatch.
+dioxus = { version = "=0.7.3", features = ["router", "fullstack"] }
 serde = { version = "1.0", features = ["derive"] }
-serde_yaml = "0.9.34-deprecated"
 serde_json = "1.0"
-google-gmail1 = "5.0.0"
-yup-oauth2 = "12.1.2"
-chrono = { version = "0.4", features = ["serde"] }
-anyhow = "1.0"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-base64 = "0.22.0"
-dirs = "5"
+
+# --- server-only deps (the routing engine + Gmail API + web OAuth) ---
+tokio = { version = "1.35", features = ["full"], optional = true }
+serde_yaml = { version = "0.9.34-deprecated", optional = true }
+google-gmail1 = { version = "7.0.0", optional = true }
+chrono = { version = "0.4", features = ["serde"], optional = true }
+anyhow = { version = "1.0", optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+dirs = { version = "5", optional = true }
+axum = { version = "0.8", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+urlencoding = { version = "2", optional = true }
+# Multi-user store: one shared SQLite DB with user_id columns.
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio"], optional = true }
+# Hashes API/device tokens at rest (see db::hash_token).
+sha2 = { version = "0.10", optional = true }
+# Random API-token generation.
+uuid = { version = "1", features = ["v4"], optional = true }
+
+[features]
+# `dx serve`/`dx bundle` drive the two halves; `web` is the default client.
+default = ["web"]
+web = ["dioxus/web"]
+server = [
+    "dioxus/server",
+    "dep:tokio",
+    "dep:serde_yaml",
+    "dep:google-gmail1",
+    "dep:chrono",
+    "dep:anyhow",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "dep:dirs",
+    "dep:axum",
+    "dep:reqwest",
+    "dep:urlencoding",
+    "dep:sqlx",
+    "dep:sha2",
+    "dep:uuid",
+]
 
 [profile.release]
 opt-level = 3
-lto = true
+lto = "thin"

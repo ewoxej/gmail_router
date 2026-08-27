@@ -3,11 +3,15 @@
 **/*.rs.bk
 *.pdb
 
+# Dioxus CLI
+/.dioxus/
+
 # Sensitive configuration files
 secret.json
 credentials.yaml
 routing.yaml
 token_cache.json
+authorized_user.json
 
 # IDE
 .idea/

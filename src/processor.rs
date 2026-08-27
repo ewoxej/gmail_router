@@ -74,16 +74,18 @@ pub async fn collect_all_addresses(
     Ok(all_addresses)
 }
 
-pub fn should_delete_message(
+pub fn resolve_action(
     recipients: &[String],
-    routing_config: &crate::config::RoutingConfig,
-) -> bool {
+    routes: &std::collections::HashMap<String, crate::models::RouteAction>,
+) -> crate::models::RouteAction {
     for recipient in recipients {
-        if !routing_config.is_allowed(recipient) {
-            return true;
+        if let Some(action) = routes.get(recipient) {
+            if !action.is_keep() {
+                return action.clone();
+            }
         }
     }
-    false
+    crate::models::RouteAction::Keep
 }
 
 #[cfg(test)]
@@ -111,23 +113,20 @@ mod tests {
     }
 
     #[test]
-    fn test_should_delete_message() {
-        use crate::config::RoutingConfig;
+    fn test_resolve_action() {
+        use crate::models::RouteAction;
+        use std::collections::HashMap;
 
-        let mut config = RoutingConfig::default();
-        config.addresses.insert("allowed".to_string(), true);
-        config.addresses.insert("blocked".to_string(), false);
+        let mut routes = HashMap::new();
+        routes.insert("allowed".to_string(), RouteAction::Keep);
+        routes.insert("blocked".to_string(), RouteAction::Trash);
 
-        assert!(!should_delete_message(
-            &vec!["allowed".to_string()],
-            &config
-        ));
-
-        assert!(should_delete_message(&vec!["blocked".to_string()], &config));
-
-        assert!(should_delete_message(
-            &vec!["allowed".to_string(), "blocked".to_string()],
-            &config
-        ));
+        assert_eq!(resolve_action(&["allowed".to_string()], &routes), RouteAction::Keep);
+        assert_eq!(resolve_action(&["blocked".to_string()], &routes), RouteAction::Trash);
+        assert_eq!(resolve_action(&["unknown".to_string()], &routes), RouteAction::Keep);
+        assert_eq!(
+            resolve_action(&["allowed".to_string(), "blocked".to_string()], &routes),
+            RouteAction::Trash
+        );
     }
 }

@@ -1,3 +1,4 @@
+use crate::models::RouteAction;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,37 @@ pub fn get_config_path(filename: &str) -> PathBuf {
 pub const CREDENTIALS_FILE: &str = "credentials.yaml";
 pub const ROUTING_FILE: &str = "routing.yaml";
 
+pub fn is_decision_mode() -> bool {
+    std::env::var("ROUTER_MODE")
+        .map(|m| m.eq_ignore_ascii_case("decision"))
+        .unwrap_or(false)
+}
+
+pub fn mode_str() -> &'static str {
+    if is_decision_mode() {
+        "decision"
+    } else {
+        "active"
+    }
+}
+
+pub const AUTHORIZED_USER_FILE: &str = "authorized_user.json";
+
+pub fn resolve_credentials_file(google_credentials_path: &str) -> PathBuf {
+    let p = Path::new(google_credentials_path);
+    if p.is_absolute() {
+        if p.exists() {
+            return p.to_path_buf();
+        }
+        let name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "secret.json".to_string());
+        return get_config_path(&name);
+    }
+    get_config_path(google_credentials_path)
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CredentialsConfig {
     pub google_credentials_path: String,
@@ -27,8 +59,37 @@ pub struct CredentialsConfig {
 
 #[derive(Debug, Deserialize, Serialize, Default)]
 pub struct RoutingConfig {
-    pub addresses: HashMap<String, bool>,
+    pub addresses: HashMap<String, RouteAction>,
     pub updated_date: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyRoutingConfig {
+    #[serde(default)]
+    addresses: HashMap<String, bool>,
+    #[serde(default)]
+    updated_date: DateTime<Utc>,
+}
+
+impl From<LegacyRoutingConfig> for RoutingConfig {
+    fn from(legacy: LegacyRoutingConfig) -> Self {
+        let addresses = legacy
+            .addresses
+            .into_iter()
+            .map(|(k, allowed)| {
+                let action = if allowed {
+                    RouteAction::Keep
+                } else {
+                    RouteAction::Delete
+                };
+                (k, action)
+            })
+            .collect();
+        RoutingConfig {
+            addresses,
+            updated_date: legacy.updated_date,
+        }
+    }
 }
 
 impl CredentialsConfig {
@@ -47,11 +108,12 @@ impl RoutingConfig {
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let contents =
             fs::read_to_string(path.as_ref()).context("Failed to read routing config file")?;
-
-        let config: RoutingConfig =
+        if let Ok(config) = serde_yaml::from_str::<RoutingConfig>(&contents) {
+            return Ok(config);
+        }
+        let legacy: LegacyRoutingConfig =
             serde_yaml::from_str(&contents).context("Failed to parse routing config YAML")?;
-
-        Ok(config)
+        Ok(legacy.into())
     }
 
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
@@ -63,12 +125,12 @@ impl RoutingConfig {
         Ok(())
     }
 
-    pub fn is_allowed(&self, local_part: &str) -> bool {
-        self.addresses.get(local_part).copied().unwrap_or(true)
+    pub fn action_for(&self, local_part: &str) -> RouteAction {
+        self.addresses.get(local_part).cloned().unwrap_or_default()
     }
 
     pub fn add_address(&mut self, local_part: String) {
-        self.addresses.entry(local_part).or_insert(true);
+        self.addresses.entry(local_part).or_insert(RouteAction::Keep);
     }
 
     pub fn update_date(&mut self, date: DateTime<Utc>) {
@@ -81,19 +143,54 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_allowed_default() {
+    fn test_action_for_default() {
         let config = RoutingConfig::default();
-        assert!(config.is_allowed("test"));
+        assert_eq!(config.action_for("test"), RouteAction::Keep);
     }
 
     #[test]
-    fn test_is_allowed_explicit() {
+    fn test_action_for_explicit() {
         let mut config = RoutingConfig::default();
-        config.addresses.insert("allowed".to_string(), true);
-        config.addresses.insert("blocked".to_string(), false);
+        config.addresses.insert("keep".to_string(), RouteAction::Keep);
+        config.addresses.insert("trash".to_string(), RouteAction::Trash);
 
-        assert!(config.is_allowed("allowed"));
-        assert!(!config.is_allowed("blocked"));
-        assert!(config.is_allowed("unknown"));
+        assert_eq!(config.action_for("keep"), RouteAction::Keep);
+        assert_eq!(config.action_for("trash"), RouteAction::Trash);
+        assert_eq!(config.action_for("unknown"), RouteAction::Keep);
+    }
+
+    #[test]
+    fn test_yaml_roundtrip_with_forward() {
+        let mut config = RoutingConfig::default();
+        config.addresses.insert("del".to_string(), RouteAction::Delete);
+        config.addresses.insert(
+            "fwd".to_string(),
+            RouteAction::Forward {
+                to: "me@other.com".to_string(),
+            },
+        );
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let back: RoutingConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(back.action_for("del"), RouteAction::Delete);
+        assert_eq!(
+            back.action_for("fwd"),
+            RouteAction::Forward {
+                to: "me@other.com".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_legacy_bool_migration() {
+        // Old routing.yaml shape: addresses map of local-part -> bool.
+        let yaml = "addresses:\n  ok: true\n  bad: false\nupdated_date: \"2024-01-01T00:00:00Z\"\n";
+        let cfg = serde_yaml::from_str::<RoutingConfig>(yaml)
+            .ok()
+            .unwrap_or_else(|| {
+                let legacy: LegacyRoutingConfig = serde_yaml::from_str(yaml).unwrap();
+                legacy.into()
+            });
+        assert_eq!(cfg.action_for("ok"), RouteAction::Keep);
+        assert_eq!(cfg.action_for("bad"), RouteAction::Delete);
     }
 }

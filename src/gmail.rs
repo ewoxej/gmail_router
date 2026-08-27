@@ -1,56 +1,54 @@
 use anyhow::{Context, Result};
 use google_gmail1::{
-    api::{ListMessagesResponse, Message},
-    hyper::{self, client::HttpConnector},
+    api::{ListMessagesResponse, Message, ModifyMessageRequest},
     hyper_rustls::{self, HttpsConnector},
-    oauth2::{self},
-    Gmail,
+    hyper_util::{self, client::legacy::connect::HttpConnector, rt::TokioExecutor},
+    yup_oauth2 as oauth2, Gmail,
 };
-use std::path::Path;
 use tracing::{debug, info};
+
+const SCOPE: &str = "https://mail.google.com/";
+
+fn https_connector() -> Result<HttpsConnector<HttpConnector>> {
+    Ok(hyper_rustls::HttpsConnectorBuilder::new()
+        .with_native_roots()
+        .context("Failed to load native roots")?
+        .https_or_http()
+        .enable_http1()
+        .build())
+}
 
 pub struct GmailClient {
     hub: Gmail<HttpsConnector<HttpConnector>>,
 }
 
 impl GmailClient {
-    pub async fn new<P: AsRef<Path>>(credentials_path: P) -> Result<Self> {
+    pub async fn new_for_user(
+        client_id: &str,
+        client_secret: &str,
+        refresh_token: &str,
+    ) -> Result<Self> {
         info!("Initializing Gmail client");
 
-        let secret = oauth2::read_application_secret(credentials_path)
-            .await
-            .context("Failed to read OAuth2 credentials")?;
+        let secret = oauth2::authorized_user::AuthorizedUserSecret {
+            client_id: client_id.to_string(),
+            client_secret: client_secret.to_string(),
+            refresh_token: refresh_token.to_string(),
+            key_type: "authorized_user".to_string(),
+        };
 
-        let mut path = dirs::config_dir().expect("Cannot find config dir");
-        path.push("gmail_router");
-        std::fs::create_dir_all(&path).expect("Cannot create config dir");
-        path.push("token_cache.json");
-        let auth = oauth2::InstalledFlowAuthenticator::builder(
+        let auth_client = hyper_util::client::legacy::Client::builder(TokioExecutor::new())
+            .build(https_connector()?);
+        let auth = oauth2::AuthorizedUserAuthenticator::with_client(
             secret,
-            oauth2::InstalledFlowReturnMethod::HTTPPortRedirect(14500),
+            oauth2::client::CustomHyperClientBuilder::from(auth_client),
         )
-        .persist_tokens_to_disk(path)
         .build()
         .await
         .context("Failed to create authenticator")?;
 
-        let scopes = &["https://mail.google.com/"];
-        let token = auth
-            .token(scopes)
-            .await
-            .context("Failed to obtain access token")?;
-        println!("Token obtained: {:?}", token.token().is_some());
-        if let Some(t) = token.token() {
-            println!("Token value: {}", t);
-        }
-        let https = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .context("Failed to load native roots")?
-            .https_or_http()
-            .enable_http1()
-            .build();
-
-        let client = hyper::Client::builder().build(https);
+        let client =
+            hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build(https_connector()?);
         let hub = Gmail::new(client, auth);
 
         Ok(Self { hub })
@@ -67,7 +65,7 @@ impl GmailClient {
                 .hub
                 .users()
                 .messages_list("me")
-                .add_scope("https://mail.google.com/");
+                .add_scope(SCOPE);
             request = request.q(&format!("in:inbox after:{}", after_date));
 
             if let Some(token) = page_token {
@@ -106,7 +104,7 @@ impl GmailClient {
             .hub
             .users()
             .messages_get("me", message_id)
-            .add_scope("https://mail.google.com/")
+            .add_scope(SCOPE)
             .format("full")
             .doit()
             .await
@@ -115,11 +113,24 @@ impl GmailClient {
         Ok(result.1)
     }
 
+    async fn get_message_raw(&self, message_id: &str) -> Result<Vec<u8>> {
+        let (_, msg) = self
+            .hub
+            .users()
+            .messages_get("me", message_id)
+            .add_scope(SCOPE)
+            .format("raw")
+            .doit()
+            .await
+            .context("Failed to get raw message")?;
+        msg.raw.context("Message had no raw body")
+    }
+
     pub async fn delete_message(&self, message_id: &str) -> Result<()> {
         self.hub
             .users()
             .messages_delete("me", message_id)
-            .add_scope("https://mail.google.com/")
+            .add_scope(SCOPE)
             .doit()
             .await
             .context("Failed to delete message")?;
@@ -128,8 +139,21 @@ impl GmailClient {
         Ok(())
     }
 
+    pub async fn trash_message(&self, message_id: &str) -> Result<()> {
+        self.hub
+            .users()
+            .messages_trash("me", message_id)
+            .add_scope(SCOPE)
+            .doit()
+            .await
+            .context("Failed to trash message")?;
+
+        debug!("Trashed message {}", message_id);
+        Ok(())
+    }
+
     pub async fn move_message_to_spam(&self, message_id: &str) -> Result<()> {
-        let req = google_gmail1::api::ModifyMessageRequest {
+        let req = ModifyMessageRequest {
             add_label_ids: Some(vec!["SPAM".to_string()]),
             remove_label_ids: Some(vec!["INBOX".to_string()]),
         };
@@ -137,7 +161,7 @@ impl GmailClient {
         self.hub
             .users()
             .messages_modify(req, "me", message_id)
-            .add_scope("https://mail.google.com/")
+            .add_scope(SCOPE)
             .doit()
             .await
             .context("Failed to move message to spam")?;
@@ -145,4 +169,78 @@ impl GmailClient {
         debug!("Moved message to spam {}", message_id);
         Ok(())
     }
+
+    pub async fn forward_message(&self, message_id: &str, to: &str) -> Result<()> {
+        let full = self.get_message(message_id).await?;
+        let subject = header_value(&full, "subject").unwrap_or_default();
+        let raw = self.get_message_raw(message_id).await?;
+
+        let body = build_forward_mime(to, &subject, &raw);
+
+        self.hub
+            .users()
+            .messages_send(Message::default(), "me")
+            .add_scope(SCOPE)
+            .upload(
+                std::io::Cursor::new(body),
+                "message/rfc822".parse().expect("valid mime"),
+            )
+            .await
+            .context("Failed to send forwarded message")?;
+
+        debug!("Forwarded message {} to {}", message_id, to);
+        Ok(())
+    }
+}
+
+fn header_value(message: &Message, name: &str) -> Option<String> {
+    let headers = message.payload.as_ref()?.headers.as_ref()?;
+    headers
+        .iter()
+        .find(|h| {
+            h.name
+                .as_ref()
+                .map(|n| n.eq_ignore_ascii_case(name))
+                .unwrap_or(false)
+        })
+        .and_then(|h| h.value.clone())
+}
+
+fn header_safe(value: &str) -> String {
+    value.replace(['\r', '\n'], " ")
+}
+
+fn build_forward_mime(to: &str, subject: &str, original: &[u8]) -> Vec<u8> {
+    let boundary = format!(
+        "=_gmailrouter_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+
+    let header = format!(
+        "To: {to}\r\n\
+         Subject: Fwd: {subject}\r\n\
+         MIME-Version: 1.0\r\n\
+         Content-Type: multipart/mixed; boundary=\"{boundary}\"\r\n\
+         \r\n\
+         --{boundary}\r\n\
+         Content-Type: text/plain; charset=\"UTF-8\"\r\n\
+         \r\n\
+         Forwarded automatically by Gmail Router. Original message attached.\r\n\
+         \r\n\
+         --{boundary}\r\n\
+         Content-Type: message/rfc822\r\n\
+         Content-Disposition: attachment; filename=\"forwarded.eml\"\r\n\
+         \r\n",
+        to = header_safe(to),
+        subject = header_safe(subject),
+    );
+
+    let mut out = Vec::with_capacity(header.len() + original.len() + boundary.len() + 8);
+    out.extend_from_slice(header.as_bytes());
+    out.extend_from_slice(original);
+    out.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    out
 }
